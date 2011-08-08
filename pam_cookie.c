@@ -106,14 +106,19 @@ uc_open(const char *username)
 void
 uc_save(UC *uc, const char *username)
 {
+  char tmp_path[PATH_SIZE];
   char path[PATH_SIZE];
   FILE *f;
 
   umask(007);
-  snprintf(path, PATH_SIZE, "%s/%s", CDB_PATH, username);
-  f = fopen(path, "w");
+  snprintf(tmp_path, PATH_SIZE, "%s/%s.tmp", CDB_PATH, username);
+  f = fopen(tmp_path, "w");
   fprintf(f, CDB_OUT_FMT, uc->salt, uc->hash, uc->touch_time, uc->max_time);
   fclose(f);
+
+  snprintf(path, PATH_SIZE, "%s/%s", CDB_PATH, username);
+  rename(tmp_path, path);
+  
 }
 
 
