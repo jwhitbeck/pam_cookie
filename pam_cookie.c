@@ -5,7 +5,7 @@
  * of time instead of just once. For example this allows use of OTP's for       *
  * authenticating against a web or imap server. An optional 'cookie' mode       *
  * extends the validity period every time the OTP is entered.                   *
- * Copyright (C) 2011  Sean Whitbeck <sean@neush.net>                           *
+ * Copyright (C) 2011  John Whitbeck <john@whitbeck.fr>                         *
  *                                                                              *
  * This program is free software: you can redistribute it and/or modify         *
  * it under the terms of the GNU General Public License as published by         *
