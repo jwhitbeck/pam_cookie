@@ -6,11 +6,13 @@ Description
 
 pam\_cookie is intended to allow a one-time-password (OTP) token to
 remain valid over a period of time instead of just once. For example
-this allows use of OTP's for authenticating against a web or imap
+this allows the use of OTPs for authenticating against a web or imap
 server. An optional 'cookie' mode may extend the validity period every
-time the correct OTP is entered. It was conceived with
+time the correct OTP is entered. It basically 'wraps' around an
+existing pam auth module, caches correct passwords, and skips the
+wrapped auth module for a certain time period. It was conceived with
 [pam_mobile_otp](http://motp.sourceforge.net) in mind but it should
-work with any pam authentication module (e.g. pam_unix.so).
+work with any pam authentication module.
 
 [Pwauth](http://code.google.com/p/pwauth/) may be used in conjunction
 with [mod-authn-external](http://code.google.com/p/mod-auth-external/)
