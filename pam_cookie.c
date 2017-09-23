@@ -35,16 +35,14 @@
 #include <security/pam_ext.h>
 #include <security/pam_appl.h>
 #include <openssl/evp.h>
-#include <openssl/sha.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 
 #define CDB_PATH "/var/cache/pam_cookies"
 #define DEFAULT_INTERVAL 600 // 10 minutes
 #define PATH_SIZE 250
-#define SALT_SIZE 8
-#define HASH_SIZE 40
-#define CDB_IN_FMT "%8s %40s %lu %lu"
+#define SALT_SIZE 24
+#define HASH_SIZE 128
+#define CDB_IN_FMT "%24s %128s %lu %lu"
 #define CDB_OUT_FMT "%s\t%s\t%lu\t%lu\n"
 #define INVALID_TIME 0
 
@@ -126,28 +124,29 @@ uc_set_max_time(UC *uc, time_t lifetime) {
 
 void
 uc_new_salt(UC *uc) {
-  int i = rand();
-  snprintf(uc->salt, SALT_SIZE, "%08x", i);
+  int i;
+  for (i = 0; i < SALT_SIZE / 8; ++i) {
+    snprintf(&(uc->salt[8 * i]), 9, "%08x", rand());
+  }
   uc->salt[SALT_SIZE] = '\0';
 }
 
 char *
 uc_get_hash_string(UC *uc, const char *password) {
-  EVP_MD_CTX mdctx;
-  const EVP_MD *md = EVP_sha1();
-  unsigned char md_value[SHA_DIGEST_LENGTH];
+  EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+  const EVP_MD *md = EVP_sha512();
+  unsigned char md_value[HASH_SIZE * 2];
   unsigned int md_len;
-  EVP_MD_CTX_init(&mdctx);
-  EVP_DigestInit_ex(&mdctx, md, NULL);
-  EVP_DigestUpdate(&mdctx, uc->salt, strlen(uc->salt));
-  EVP_DigestUpdate(&mdctx, password, strlen(password));
-  EVP_DigestFinal_ex(&mdctx, md_value, &md_len);
-  EVP_MD_CTX_cleanup(&mdctx);
+  EVP_DigestInit_ex(mdctx, md, NULL);
+  EVP_DigestUpdate(mdctx, uc->salt, strlen(uc->salt));
+  EVP_DigestUpdate(mdctx, password, strlen(password));
+  EVP_DigestFinal_ex(mdctx, md_value, &md_len);
+  EVP_MD_CTX_free(mdctx);
 
-  char *hash_string = malloc(sizeof(char) * (HASH_SIZE + 1)); // 40 hex digits for a 160 bit sha1 hash + trailing '\0'
+  char *hash_string = malloc(sizeof(char) * (HASH_SIZE + 1)); // 128 hex digits for a 512 bit sha2 hash + trailing '\0'
   int i;
   int *k = (int *) md_value;
-  for (i = 0; i < 5; ++i) {
+  for (i = 0; i < HASH_SIZE / 8; ++i) {
     snprintf(&(hash_string[8 * i]), 9, "%08x", k[i]);
   }
 
