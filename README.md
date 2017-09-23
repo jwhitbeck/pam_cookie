@@ -119,10 +119,17 @@ every 'interval' minutes.
 Log debugging information to /var/log/auth.log. Warning: this
 will print passwords in cleartext into your log files.
 
+
 #### strict
 User gets authenticated only when he uses the same IP address.
 The IP address is determind by the PAM_RHOST item. The option
 should be set in both auth and touch mode.
+
+
+#### strip_last_n_pw_chars=&lt;value&gt;
+Only use with auth mode. Strip last n characters from the
+password when successful authentication has been made. Useful
+when using some kind of OTP system in the pam chain.
 
 
 

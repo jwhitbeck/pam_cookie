@@ -136,14 +136,15 @@ uc_new_salt(UC *uc) {
 }
 
 char *
-uc_get_hash_string(UC *uc, const char *password) {
+uc_get_hash_string(UC *uc, const char *password, int strip_last_n_pw_chars) {
   EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
   const EVP_MD *md = EVP_sha512();
   unsigned char md_value[HASH_SIZE * 2];
   unsigned int md_len;
+  size_t pw_len = strlen(password) - strip_last_n_pw_chars;
   EVP_DigestInit_ex(mdctx, md, NULL);
   EVP_DigestUpdate(mdctx, uc->salt, strlen(uc->salt));
-  EVP_DigestUpdate(mdctx, password, strlen(password));
+  EVP_DigestUpdate(mdctx, password, pw_len < 0 ? 0 : pw_len);
   EVP_DigestFinal_ex(mdctx, md_value, &md_len);
   EVP_MD_CTX_free(mdctx);
 
@@ -167,13 +168,13 @@ uc_set_password(UC *uc, const char *password) {
   uc_new_salt(uc);
   if (uc->hash != NULL)
     free(uc->hash);
-  uc->hash = uc_get_hash_string(uc, password);
+  uc->hash = uc_get_hash_string(uc, password, 0);
   uc_touch(uc);
 }
 
 int
-uc_check_password(UC *uc, const char *password) {
-  char *new_hash = uc_get_hash_string(uc, password);
+uc_check_password(UC *uc, const char *password, int strip_last_n_pw_chars) {
+  char *new_hash = uc_get_hash_string(uc, password, strip_last_n_pw_chars);
   int retval = strncmp(uc->hash, new_hash, HASH_SIZE);
   free(new_hash);
   if (retval == 0)
@@ -281,6 +282,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
   int try_first_pass = 0;
   int is_auth_action = 0;
   int is_touch_action = 0;
+  int strip_last_n_pw_chars = 0;
   int cookie = 0;
   time_t interval = DEFAULT_INTERVAL;
   time_t lifetime = 0;
@@ -314,6 +316,10 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
       debug = 1;
     } else if (strncmp(argv[i], "strict", strlen("strict")) == 0) {
       strict = 1;
+    } else if (strncmp(argv[i], "strip_last_n_pw_chars=", strlen("strip_last_n_pw_chars=")) == 0) {
+      char *strip_last_n_pw_chars_ptr = strchr(argv[i], '=');
+      strip_last_n_pw_chars_ptr++;
+      strip_last_n_pw_chars = atoi(strip_last_n_pw_chars_ptr);
     } else {
       pam_syslog(pamh, LOG_AUTHPRIV | LOG_ERR, "unknown option '%s'.", argv[i]);
     }
@@ -401,13 +407,24 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
       uc_free(uc);
       return PAM_AUTH_ERR;
     }
-    if (!uc_check_password(uc, password)) {
+    if (!uc_check_password(uc, password, strip_last_n_pw_chars)) {
       if (debug)
         pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "incorrect password for user '%s'.", user);
       uc_free(uc);
       free(password);
       return PAM_AUTH_ERR;
     }
+
+    size_t pw_len = strlen(password);
+    if (strip_last_n_pw_chars > 0 && pw_len > strip_last_n_pw_chars) {
+      password[pw_len - strip_last_n_pw_chars] = '\0';
+      if ((retval = pam_set_item(pamh, PAM_AUTHTOK, password)) != PAM_SUCCESS) {
+        pam_syslog(pamh, LOG_AUTHPRIV | LOG_ERR, "cannot forward password.");
+        return retval;
+      }
+      pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "forwarded password '%s'.", password);
+    }
+
     free(password);
     uc_free(uc);
     pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "user '%s' authenticated.", user);
@@ -442,7 +459,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
         uc_set_max_time(uc, lifetime);
       uc_save(uc, user);
     } else {
-      if (uc_check_password(uc, password)) { // we are still using the same password
+      if (uc_check_password(uc, password, 0)) { // we are still using the same password
         uc_set_rhost(uc, rhost);
         if (cookie) {
           if (debug)
