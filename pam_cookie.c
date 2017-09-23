@@ -422,12 +422,14 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
         pam_syslog(pamh, LOG_AUTHPRIV | LOG_ERR, "cannot forward password.");
         return retval;
       }
-      pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "forwarded password '%s'.", password);
+      if (debug)
+        pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "forwarded password '%s'.", password);
     }
 
     free(password);
     uc_free(uc);
-    pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "user '%s' authenticated.", user);
+    if (debug)
+      pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "user '%s' authenticated.", user);
     return PAM_SUCCESS;
   }
 
