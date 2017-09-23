@@ -42,8 +42,9 @@
 #define PATH_SIZE 250
 #define SALT_SIZE 24
 #define HASH_SIZE 128
-#define CDB_IN_FMT "%24s %128s %lu %lu"
-#define CDB_OUT_FMT "%s\t%s\t%lu\t%lu\n"
+#define RHOST_MAX_SIZE 128
+#define CDB_IN_FMT "%24s %128s %lu %lu %s"
+#define CDB_OUT_FMT "%s\t%s\t%lu\t%lu\t%s\n"
 #define INVALID_TIME 0
 
 /* --- user cookie functions --- */
@@ -53,6 +54,7 @@ typedef struct _uc {
   char *hash;
   time_t touch_time;
   time_t max_time;
+  char *rhost;
 } UC;
 
 UC *
@@ -62,6 +64,7 @@ uc_new() {
   uc->hash = malloc(sizeof(char) * (HASH_SIZE + 1));
   uc->touch_time = INVALID_TIME;
   uc->max_time = INVALID_TIME;
+  uc->rhost = malloc(sizeof(char) * (RHOST_MAX_SIZE + 1));
   return uc;
 }
 
@@ -69,6 +72,7 @@ void
 uc_free(UC *uc) {
   free(uc->salt);
   free(uc->hash);
+  free(uc->rhost);
   free(uc);
 }
 
@@ -83,9 +87,9 @@ uc_open(const char *username) {
   f = fopen(path, "r");
   if (f != NULL) {
     uc = uc_new();
-    retval = fscanf(f, CDB_IN_FMT, uc->salt, uc->hash, &(uc->touch_time), &(uc->max_time));
+    retval = fscanf(f, CDB_IN_FMT, uc->salt, uc->hash, &(uc->touch_time), &(uc->max_time), uc->rhost);
     fclose(f);
-    if (retval == 4)
+    if (retval >= 4)
       return uc;
     uc_free(uc);
     return NULL;
@@ -102,7 +106,7 @@ uc_save(UC *uc, const char *username) {
   umask(007);
   snprintf(tmp_path, PATH_SIZE, "%s/%s.tmp", CDB_PATH, username);
   f = fopen(tmp_path, "w");
-  fprintf(f, CDB_OUT_FMT, uc->salt, uc->hash, uc->touch_time, uc->max_time);
+  fprintf(f, CDB_OUT_FMT, uc->salt, uc->hash, uc->touch_time, uc->max_time, uc->rhost);
   fclose(f);
 
   snprintf(path, PATH_SIZE, "%s/%s", CDB_PATH, username);
@@ -170,7 +174,7 @@ uc_set_password(UC *uc, const char *password) {
 int
 uc_check_password(UC *uc, const char *password) {
   char *new_hash = uc_get_hash_string(uc, password);
-  int retval = strncmp(uc->hash, new_hash, 40);
+  int retval = strncmp(uc->hash, new_hash, HASH_SIZE);
   free(new_hash);
   if (retval == 0)
     return 1;
@@ -186,6 +190,27 @@ uc_not_expired(UC *uc, time_t interval) {
   if (cur_time > uc->touch_time + interval)
     return 0;
   return 1;
+}
+
+void
+uc_set_rhost(UC *uc, const char *rhost) {
+  if (rhost == NULL) {
+    uc->rhost[0] = '\0';
+    return;
+  }
+  strncpy(uc->rhost, rhost, RHOST_MAX_SIZE);
+  uc->rhost[RHOST_MAX_SIZE] = '\0';
+}
+
+int
+uc_check_rhost(UC *uc, const char *rhost) {
+  if (rhost == NULL)
+    return 0;
+  size_t rhost_len = strlen(rhost);
+  int retval = strncmp(uc->rhost, rhost, rhost_len > RHOST_MAX_SIZE ? RHOST_MAX_SIZE : rhost_len);
+  if (retval == 0)
+    return 1;
+  return 0;
 }
 
 /* --- authentication management functions --- */
@@ -251,6 +276,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
                     int argc, const char **argv) {
   int retval = 0;
   int debug = 0;
+  int strict = 0;
   int use_first_pass = 0;
   int try_first_pass = 0;
   int is_auth_action = 0;
@@ -259,6 +285,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
   time_t interval = DEFAULT_INTERVAL;
   time_t lifetime = 0;
   const char *user = NULL;
+  const char *rhost = NULL;
   char *password = NULL;
   UC *uc = NULL;
 
@@ -285,6 +312,8 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
       lifetime = (time_t) atol(lifetime_ptr) * 60; // convert minutes to seconds
     } else if (strncmp(argv[i], "debug", strlen("debug")) == 0) {
       debug = 1;
+    } else if (strncmp(argv[i], "strict", strlen("strict")) == 0) {
+      strict = 1;
     } else {
       pam_syslog(pamh, LOG_AUTHPRIV | LOG_ERR, "unknown option '%s'.", argv[i]);
     }
@@ -305,10 +334,17 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 
   /* get user name */
   if ((retval = pam_get_user(pamh, &user, NULL)) != PAM_SUCCESS) {
+    pam_syslog(pamh, LOG_AUTHPRIV | LOG_ERR, "cannot get user.");
     return retval;
   }
+  /* get rhost */
+  if (strict && (retval = pam_get_item(pamh, PAM_RHOST, (void *) &rhost)) != PAM_SUCCESS) {
+    pam_syslog(pamh, LOG_AUTHPRIV | LOG_ERR, "cannot get rhost.");
+    return retval;
+  }
+
   if (debug)
-    pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "user %s", user);
+    pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "user '%s', rhost '%s'", user, rhost);
 
   /* seed random number generator */
   srand(time(NULL));
@@ -357,6 +393,14 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
       uc_free(uc);
       return PAM_AUTH_ERR;
     }
+    if (strict && !uc_check_rhost(uc, rhost)) {
+      uc_remove(user);
+      if (debug)
+        pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "rhost for user '%s' does not match.", user);
+      free(password);
+      uc_free(uc);
+      return PAM_AUTH_ERR;
+    }
     if (!uc_check_password(uc, password)) {
       if (debug)
         pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "incorrect password for user '%s'.", user);
@@ -366,6 +410,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
     }
     free(password);
     uc_free(uc);
+    pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "user '%s' authenticated.", user);
     return PAM_SUCCESS;
   }
 
@@ -391,18 +436,21 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
       if (debug)
         pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "creating cookie for user '%s'.", user);
       uc = uc_new();
+      uc_set_rhost(uc, rhost);
       uc_set_password(uc, password);
       if (lifetime > 0)
         uc_set_max_time(uc, lifetime);
       uc_save(uc, user);
     } else {
       if (uc_check_password(uc, password)) { // we are still using the same password
+        uc_set_rhost(uc, rhost);
         if (cookie) {
           if (debug)
             pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "touching cookie for user '%s'.", user);
           uc_touch(uc);
         }
       } else { // this is new password, so we have to reset the lifetime
+        uc_set_rhost(uc, rhost);
         uc_set_password(uc, password);
         if (lifetime > 0)
           uc_set_max_time(uc, lifetime);

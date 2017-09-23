@@ -119,6 +119,11 @@ every 'interval' minutes.
 Log debugging information to /var/log/auth.log. Warning: this
 will print passwords in cleartext into your log files.
 
+#### strict
+Only use with auth mode. User gets authenticated only when he
+uses the same IP address. The IP address is determind by the
+PAM_RHOST item.
+
 
 
 Example
