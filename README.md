@@ -128,8 +128,18 @@ should be set in both auth and touch mode.
 
 #### strip_last_n_pw_chars=&lt;value&gt;
 Only use with auth mode. Strip last n characters from the
-password when successful authentication has been made. Useful
-when using some kind of OTP system in the pam chain.
+password when successful authentication has been made. Note
+that the password hash used to compare with the one store in
+the cookie is also made with characters stripped. Useful when
+using some kind of OTP system in the pam chain.
+
+
+#### digest_name=&lt;value&gt;
+Use with both auth and touch mode. Name of the digest to use
+when storing the password in the cookie. The value should be
+accepted by the
+[EVP_get_digestbyname](https://linux.die.net/man/3/evp_get_digestbyname)
+function. The default value is 'SHA256'.
 
 
 

@@ -22,10 +22,6 @@
  ********************************************************************************/
 
 
-#define PAM_SM_AUTH
-#define PAM_SM_ACCOUNT
-#define PAM_SM_SESSION
-#define PAM_SM_PASSWORD
 
 #include <stdlib.h>
 #include <string.h>
@@ -33,18 +29,17 @@
 #include <time.h>
 #include <security/pam_modules.h>
 #include <security/pam_ext.h>
-#include <security/pam_appl.h>
 #include <openssl/evp.h>
 #include <sys/stat.h>
 
 #define CDB_PATH "/var/cache/pam_cookies"
+#define DEFAULT_DIGEST "SHA256"
 #define DEFAULT_INTERVAL 600 // 10 minutes
-#define PATH_SIZE 250
-#define SALT_SIZE 24
-#define HASH_SIZE 128
-#define RHOST_MAX_SIZE 128
-#define CDB_IN_FMT "%24s %128s %lu %lu %s"
-#define CDB_OUT_FMT "%s\t%s\t%lu\t%lu\t%s\n"
+#define PATH_SIZE 250 // maximum path length
+#define RHOST_SIZE 250 // maximum hostname length
+#define SALT_SIZE 8 // must be the multiple of 8
+#define CDB_IN_FMT "%s %s %lu %lu %s" // salt hash touch_time max_time rhost
+#define CDB_OUT_FMT "%s\t%s\t%lu\t%lu\t%s\n" // salt hash touch_time max_time rhost
 #define INVALID_TIME 0
 
 /* --- user cookie functions --- */
@@ -61,10 +56,10 @@ UC *
 uc_new() {
   UC *uc = malloc(sizeof(UC));
   uc->salt = malloc(sizeof(char) * (SALT_SIZE + 1));
-  uc->hash = malloc(sizeof(char) * (HASH_SIZE + 1));
+  uc->hash = malloc(sizeof(char) * (EVP_MAX_MD_SIZE * 2 + 1));
   uc->touch_time = INVALID_TIME;
   uc->max_time = INVALID_TIME;
-  uc->rhost = malloc(sizeof(char) * (RHOST_MAX_SIZE + 1));
+  uc->rhost = malloc(sizeof(char) * (RHOST_SIZE + 1));
   return uc;
 }
 
@@ -89,7 +84,7 @@ uc_open(const char *username) {
     uc = uc_new();
     retval = fscanf(f, CDB_IN_FMT, uc->salt, uc->hash, &(uc->touch_time), &(uc->max_time), uc->rhost);
     fclose(f);
-    if (retval >= 4)
+    if (retval >= 4) // rhost is optional
       return uc;
     uc_free(uc);
     return NULL;
@@ -111,7 +106,6 @@ uc_save(UC *uc, const char *username) {
 
   snprintf(path, PATH_SIZE, "%s/%s", CDB_PATH, username);
   rename(tmp_path, path);
-
 }
 
 void
@@ -136,11 +130,14 @@ uc_new_salt(UC *uc) {
 }
 
 char *
-uc_get_hash_string(UC *uc, const char *password, int strip_last_n_pw_chars) {
+uc_get_hash_string(UC *uc, const char *digest_name, const char *password, int strip_last_n_pw_chars) {
+  const EVP_MD *md = EVP_get_digestbyname(digest_name);
+  if (!md) return NULL;
+
   EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
-  const EVP_MD *md = EVP_sha512();
-  unsigned char md_value[HASH_SIZE * 2];
+  unsigned char md_value[EVP_MAX_MD_SIZE];
   unsigned int md_len;
+
   size_t pw_len = strlen(password) - strip_last_n_pw_chars;
   EVP_DigestInit_ex(mdctx, md, NULL);
   EVP_DigestUpdate(mdctx, uc->salt, strlen(uc->salt));
@@ -148,12 +145,13 @@ uc_get_hash_string(UC *uc, const char *password, int strip_last_n_pw_chars) {
   EVP_DigestFinal_ex(mdctx, md_value, &md_len);
   EVP_MD_CTX_free(mdctx);
 
-  char *hash_string = malloc(sizeof(char) * (HASH_SIZE + 1)); // 128 hex digits for a 512 bit sha2 hash + trailing '\0'
+  char *hash_string = malloc(sizeof(char) * (md_len * 2 + 1));
   int i;
   int *k = (int *) md_value;
-  for (i = 0; i < HASH_SIZE / 8; ++i) {
+  for (i = 0; i < md_len / 4; ++i) {
     snprintf(&(hash_string[8 * i]), 9, "%08x", k[i]);
   }
+  hash_string[md_len * 2] = '\0';
 
   return hash_string;
 }
@@ -163,19 +161,23 @@ uc_touch(UC *uc) {
   time(&uc->touch_time);
 }
 
-void
-uc_set_password(UC *uc, const char *password) {
+int
+uc_set_password(UC *uc, const char *digest_name, const char *password) {
   uc_new_salt(uc);
   if (uc->hash != NULL)
     free(uc->hash);
-  uc->hash = uc_get_hash_string(uc, password, 0);
+  uc->hash = uc_get_hash_string(uc, digest_name, password, 0);
+  if (!uc->hash)
+    return 0;
   uc_touch(uc);
+  return 1;
 }
 
 int
-uc_check_password(UC *uc, const char *password, int strip_last_n_pw_chars) {
-  char *new_hash = uc_get_hash_string(uc, password, strip_last_n_pw_chars);
-  int retval = strncmp(uc->hash, new_hash, HASH_SIZE);
+uc_check_password(UC *uc, const char *digest_name, const char *password, int strip_last_n_pw_chars) {
+  char *new_hash = uc_get_hash_string(uc, digest_name, password, strip_last_n_pw_chars);
+  if (!new_hash) return 0;
+  int retval = strncmp(uc->hash, new_hash, EVP_MAX_MD_SIZE * 2);
   free(new_hash);
   if (retval == 0)
     return 1;
@@ -195,20 +197,19 @@ uc_not_expired(UC *uc, time_t interval) {
 
 void
 uc_set_rhost(UC *uc, const char *rhost) {
-  if (rhost == NULL) {
+  if (!rhost) {
     uc->rhost[0] = '\0';
     return;
   }
-  strncpy(uc->rhost, rhost, RHOST_MAX_SIZE);
-  uc->rhost[RHOST_MAX_SIZE] = '\0';
+  strncpy(uc->rhost, rhost, RHOST_SIZE);
+  uc->rhost[RHOST_SIZE] = '\0';
 }
 
 int
 uc_check_rhost(UC *uc, const char *rhost) {
-  if (rhost == NULL)
+  if (!rhost)
     return 0;
-  size_t rhost_len = strlen(rhost);
-  int retval = strncmp(uc->rhost, rhost, rhost_len > RHOST_MAX_SIZE ? RHOST_MAX_SIZE : rhost_len);
+  int retval = strncmp(uc->rhost, rhost, RHOST_SIZE);
   if (retval == 0)
     return 1;
   return 0;
@@ -251,7 +252,7 @@ password_prompt(pam_handle_t *pamh, char **password) {
   if (resp)
     free(resp);
 
-  return PAM_SUCCESS;
+  return retval;
 }
 
 int
@@ -269,7 +270,6 @@ fetch_password(pam_handle_t *pamh, char **password) {
   (*password)[l] = '\0';
 
   return PAM_SUCCESS;
-
 }
 
 PAM_EXTERN int
@@ -288,6 +288,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
   time_t lifetime = 0;
   const char *user = NULL;
   const char *rhost = NULL;
+  const char *digest_name = DEFAULT_DIGEST;
   char *password = NULL;
   UC *uc = NULL;
 
@@ -320,6 +321,9 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
       char *strip_last_n_pw_chars_ptr = strchr(argv[i], '=');
       strip_last_n_pw_chars_ptr++;
       strip_last_n_pw_chars = atoi(strip_last_n_pw_chars_ptr);
+    } else if (strncmp(argv[i], "digest_name=", strlen("digest_name=")) == 0) {
+      char *digest_name_ptr = strchr(argv[i], '=');
+      digest_name = ++digest_name_ptr;
     } else {
       pam_syslog(pamh, LOG_AUTHPRIV | LOG_ERR, "unknown option '%s'.", argv[i]);
     }
@@ -407,7 +411,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
       uc_free(uc);
       return PAM_AUTH_ERR;
     }
-    if (!uc_check_password(uc, password, strip_last_n_pw_chars)) {
+    if (!uc_check_password(uc, digest_name, password, strip_last_n_pw_chars)) {
       if (debug)
         pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "incorrect password for user '%s'.", user);
       uc_free(uc);
@@ -456,12 +460,16 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
         pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "creating cookie for user '%s'.", user);
       uc = uc_new();
       uc_set_rhost(uc, rhost);
-      uc_set_password(uc, password);
+      if (!uc_set_password(uc, digest_name, password)) {
+        uc_free(uc);
+        pam_syslog(pamh, LOG_AUTHPRIV | LOG_ERR, "unknown digest name.");
+        return PAM_AUTH_ERR;
+      }
       if (lifetime > 0)
         uc_set_max_time(uc, lifetime);
       uc_save(uc, user);
     } else {
-      if (uc_check_password(uc, password, 0)) { // we are still using the same password
+      if (uc_check_password(uc, digest_name, password, 0)) { // we are still using the same password
         uc_set_rhost(uc, rhost);
         if (cookie) {
           if (debug)
@@ -470,7 +478,11 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
         }
       } else { // this is new password, so we have to reset the lifetime
         uc_set_rhost(uc, rhost);
-        uc_set_password(uc, password);
+        if (!uc_set_password(uc, digest_name, password)) {
+          uc_free(uc);
+          pam_syslog(pamh, LOG_AUTHPRIV | LOG_ERR, "unknown digest name.");
+          return PAM_AUTH_ERR;
+        }
         if (lifetime > 0)
           uc_set_max_time(uc, lifetime);
       }
