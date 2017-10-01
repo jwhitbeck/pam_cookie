@@ -120,6 +120,29 @@ Log debugging information to /var/log/auth.log. Warning: this
 will print passwords in cleartext into your log files.
 
 
+#### strict
+User gets authenticated only when he uses the same IP address.
+The IP address is determind by the PAM_RHOST item. The option
+should be set in both auth and touch mode.
+
+
+#### strip_last_n_pw_chars=&lt;value&gt;
+Only use with auth mode. Strip last n characters from the
+password when successful authentication has been made. Note
+that the password hash used to compare with the one store in
+the cookie is also made with characters stripped. Useful when
+using some kind of OTP system in the pam chain. See example
+below.
+
+
+#### digest_name=&lt;value&gt;
+Use with both auth and touch mode. Name of the digest to use
+when storing the password in the cookie. The value should be
+accepted by the
+[EVP_get_digestbyname](https://linux.die.net/man/3/evp_get_digestbyname)
+function. The default value is 'SHA256'.
+
+
 
 Example
 -------
@@ -158,6 +181,41 @@ current time. This line always succeeds and then proceeds the line 5.
 * Line 5: return success
 
 
+Imagine you want to have HTTP Basic Auth enabled to authenticate users,
+along with pam_google_authenticator which adds support of OTP codes.
+In this case the pam configuration could look like this:
+
+	auth	[success=3 default=ignore]	pam_cookie.so auth strip_last_n_pw_chars=6
+	auth	[success=ok default=1]		pam_google_authenticator.so forward_pass
+	auth	[success=1 default=ignore]	pam_pgsql.so use_first_pass
+	auth	requisite			pam_deny.so
+	auth	required			pam_permit.so
+	auth	optional			pam_cookie.so cookie touch
+
+The password send to the browser consists of two parts `<password>+<otp>`.
+
+Explanation:
+
+* Line 1: Here pam_cookie gets password and compares it to the ones in its
+database. The `strip_last_n_pw_chars` tells module to remove the `<otp>`
+part so the `<password>` is always the same. When module authenticates
+the user it removes `<otp>` part and forwords only `<password>` to the next
+module. When authentication is negative the whole phrase `<password>+<otp>`
+is forwarded to the next module.
+
+* Line 2: pam_google_authenticator always gets full passphrase:
+`<password>+<otp>` and forwards `<password>` part to the next module on
+successful authentication.
+
+* Line 3: PAM module perform actual authentication. It could be any module.
+The point is that the authentication can last several seconds. That is why we
+need pam_cookie.
+
+* Line 4: Fail when previous module fails to authenticate the user.
+
+* Line 5: Permit user.
+
+* Line 6: Touch the cookie. This module always gets only `<password>` part.
 
 Security considerations
 -----------------------
@@ -184,4 +242,3 @@ This software is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 Library General Public License for more details.
-
