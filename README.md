@@ -69,7 +69,7 @@ Configuration
 The auth module has two modes: 'auth' and 'touch'. One or the either
 must be specified. Here are the pam config options:
 
-#### auth 
+#### auth
 Set auth mode. Auth mode read the current password and compares it
 to its database to check it is valid and if has not expired.
 
@@ -80,7 +80,7 @@ for passwords that were validated by another module, or updates
 the timestamps of existing passwords.
 
 
-#### use\_first\_pass       
+#### use\_first\_pass
 Only use with auth mode. If set, the module does not ask for
 the passcode, but uses the password given earlier to an other
 module.
@@ -142,19 +142,17 @@ accepted by the
 [EVP_get_digestbyname](https://linux.die.net/man/3/evp_get_digestbyname)
 function. The default value is 'SHA256'.
 
-
-
-Example
--------
+Example #1
+----------
 
 To enable 10-minute renewable OTPs with a maximum lifetime of 30 minutes, you could configure one of your pam services (e.g. /etc/pam.d/pwauth) to look like this:
 
 
-    auth	[success=1 default=ignore]      pam_cookie.so auth interval=10
-    auth	[success=ok default=1]          pam_mobile_otp.so use_first_pass
-    auth	[default=1]                     pam_cookie.so touch cookie lifetime=30
-    auth	requisite                       pam_deny.so
-    auth	required                        pam_permit.so
+    auth    [success=1 default=ignore]      pam_cookie.so auth interval=10
+    auth    [success=ok default=1]          pam_mobile_otp.so use_first_pass
+    auth    [default=1]                     pam_cookie.so touch cookie lifetime=30
+    auth    requisite                       pam_deny.so
+    auth    required                        pam_permit.so
 
 
 A quick explanation of the various lines:
@@ -181,16 +179,19 @@ current time. This line always succeeds and then proceeds the line 5.
 * Line 5: return success
 
 
+Example #2
+----------
+
 Imagine you want to have HTTP Basic Auth enabled to authenticate users,
 along with pam_google_authenticator which adds support of OTP codes.
 In this case the pam configuration could look like this:
 
-	auth	[success=3 default=ignore]	pam_cookie.so auth strip_last_n_pw_chars=6
-	auth	[success=ok default=1]		pam_google_authenticator.so forward_pass
-	auth	[success=1 default=ignore]	pam_pgsql.so use_first_pass
-	auth	requisite			pam_deny.so
-	auth	required			pam_permit.so
-	auth	optional			pam_cookie.so cookie touch
+    auth    [success=3 default=ignore]  pam_cookie.so auth strip_last_n_pw_chars=6
+    auth    [success=ok default=1]      pam_google_authenticator.so forward_pass
+    auth    [success=1 default=ignore]  pam_pgsql.so use_first_pass
+    auth    requisite           pam_deny.so
+    auth    required            pam_permit.so
+    auth    optional            pam_cookie.so cookie touch
 
 The password send to the browser consists of two parts `<password>+<otp>`.
 
