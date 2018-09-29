@@ -72,13 +72,13 @@ uc_free(UC *uc) {
 }
 
 UC *
-uc_open(const char *username) {
+uc_open(const char *username, const char *service) {
   char path[PATH_SIZE];
   UC *uc;
   FILE *f;
   int retval;
 
-  snprintf(path, PATH_SIZE, "%s/%s", CDB_PATH, username);
+  snprintf(path, PATH_SIZE, "%s/%s_%s", CDB_PATH, service, username);
   f = fopen(path, "r");
   if (f != NULL) {
     uc = uc_new();
@@ -93,25 +93,25 @@ uc_open(const char *username) {
 }
 
 void
-uc_save(UC *uc, const char *username) {
+uc_save(UC *uc, const char *username, const char *service) {
   char tmp_path[PATH_SIZE];
   char path[PATH_SIZE];
   FILE *f;
 
   umask(007);
-  snprintf(tmp_path, PATH_SIZE, "%s/%s.tmp", CDB_PATH, username);
+  snprintf(tmp_path, PATH_SIZE, "%s/%s_%s.tmp", CDB_PATH, service, username);
   f = fopen(tmp_path, "w");
   fprintf(f, CDB_OUT_FMT, uc->salt, uc->hash, uc->touch_time, uc->max_time, uc->rhost);
   fclose(f);
 
-  snprintf(path, PATH_SIZE, "%s/%s", CDB_PATH, username);
+  snprintf(path, PATH_SIZE, "%s/%s_%s", CDB_PATH, service, username);
   rename(tmp_path, path);
 }
 
 void
-uc_remove(const char *username) {
+uc_remove(const char *username, const char *service) {
   char path[PATH_SIZE];
-  snprintf(path, PATH_SIZE, "%s/%s", CDB_PATH, username);
+  snprintf(path, PATH_SIZE, "%s/%s_%s", CDB_PATH, service, username);
   remove(path);
 }
 
@@ -288,6 +288,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
   time_t lifetime = 0;
   const char *user = NULL;
   const char *rhost = NULL;
+  const char *service = NULL;
   const char *digest_name = DEFAULT_DIGEST;
   char *password = NULL;
   UC *uc = NULL;
@@ -352,9 +353,14 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
     pam_syslog(pamh, LOG_AUTHPRIV | LOG_ERR, "cannot get rhost.");
     return retval;
   }
+  /* get service */
+  if (strict && (retval = pam_get_item(pamh, PAM_SERVICE, (void *) &service)) != PAM_SUCCESS) {
+    pam_syslog(pamh, LOG_AUTHPRIV | LOG_ERR, "cannot get service.");
+    return retval;
+  }
 
   if (debug)
-    pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "user '%s', rhost '%s'", user, rhost);
+    pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "user '%s', rhost '%s', service '%s'", user, rhost, service);
 
   /* seed random number generator */
   srand(time(NULL));
@@ -388,7 +394,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
     /* if we get this far, then we have a valid password */
     if (debug)
       pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "using password '%s'.", password);
-    uc = uc_open(user);
+    uc = uc_open(user, service);
     if (uc == NULL) {
       if (debug)
         pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "could not find user '%s' in cookie db.", user);
@@ -396,7 +402,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
       return PAM_AUTH_ERR;
     }
     if (!uc_not_expired(uc, interval)) {
-      uc_remove(user);
+      uc_remove(user, service);
       if (debug)
         pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "cookie for user '%s' has expired.", user);
       free(password);
@@ -404,7 +410,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
       return PAM_AUTH_ERR;
     }
     if (strict && !uc_check_rhost(uc, rhost)) {
-      uc_remove(user);
+      uc_remove(user, service);
       if (debug)
         pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "rhost for user '%s' does not match.", user);
       free(password);
@@ -454,7 +460,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
     /* if we get this far, then we have a valid password */
     if (debug)
       pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "using password '%s'.", password);
-    uc = uc_open(user);
+    uc = uc_open(user, service);
     if (uc == NULL) {
       if (debug)
         pam_syslog(pamh, LOG_AUTHPRIV | LOG_DEBUG, "creating cookie for user '%s'.", user);
@@ -467,7 +473,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
       }
       if (lifetime > 0)
         uc_set_max_time(uc, lifetime);
-      uc_save(uc, user);
+      uc_save(uc, user, service);
     } else {
       if (uc_check_password(uc, digest_name, password, 0)) { // we are still using the same password
         uc_set_rhost(uc, rhost);
@@ -486,7 +492,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
         if (lifetime > 0)
           uc_set_max_time(uc, lifetime);
       }
-      uc_save(uc, user);
+      uc_save(uc, user, service);
     }
     uc_free(uc);
     return PAM_SUCCESS;
